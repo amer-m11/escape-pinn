@@ -1,0 +1,351 @@
+version: 1.0
+
+# =============================================================================
+# PINN training configuration.
+#
+# Every top-level key is a runnable case:
+#     PYTHONPATH=src pipenv run python -m pinn_solver.run \
+#         --config jobs/config.yaml --case <name> --output-dir output/pinn/<name>
+#
+# Any knob can be overridden on the command line:
+#     --set net.trunk=pirate --set optimizers.adam.epochs=100 --set device=cpu
+#
+# The `template` case below is runnable and documents every available option.
+# The cases after it are small working examples.
+# =============================================================================
+
+# ── template: all available options ─────────────────────────────────────────
+template:
+
+  # Network. `name` selects the architecture family:
+  #   fc-mlp — fully-connected MLP
+  #   siren  — sine activations with ω₀ init (extra field: omega_0, default 30.0)
+  net:
+    name: "fc-mlp"
+    arch_name: "template-net"     # free-text label recorded in metrics.json
+    hidden_layers: 5
+    hidden_neurons: 96
+    activation: "tanh"            # fc-mlp only
+    trunk: "pirate"               # fc-mlp trunk family: tanh | adaptive_tanh |
+                                  #   pirate (gated residual) | siren
+    per_channel_heads: true       # one independent readout head per output channel
+
+    # Input features / output assembly (all default off). factored_eikonal,
+    # selector_head and domain_decomp reshape the û/σ̂ output assembly and are
+    # mutually exclusive — enable at most one.
+    exit_time_features: true      # feed straight-ray exit times as extra trunk
+                                  #   inputs (3D-Cartesian only)
+    # exit_time_sign: true        # + per-axis sign(dᵢ) indicators (needs
+                                  #   exit_time_features)
+    factored_eikonal: true        # û = analytic n=1 escape time + NN correction
+    # selector_head: true         # blend N branch nets by a learned gate
+    # selector_branches: 2
+    # domain_decomp: 2            # FBPINN-style 2³ overlapping subnets
+                                  #   (3D-spherical only)
+    # domain_decomp_overlap: 0.25
+    # unit_norm_output: true      # hard-normalize the exit direction. Defaults
+                                  #   to true for parametrization: cartesian
+    # fourier_features:           # random-Fourier spatial input encoding
+    #   n_features: 64
+    #   sigma: 3.0
+    #   angular: false            # 3D: also lift the angular inputs
+
+    # Slowness conditioning (generalization over a family of media. See the
+    # gaussian_lens_family_cart_3d case below). Auto-set from the family spec.
+    # conditioning_dim: 0         # >0 = width of the per-point descriptor input
+    # field_encoder: true         # DeepONet-style branch net over a probe grid
+    # encoder_latent_dim: 16
+    # encoder_hidden: 64
+    # encoder_depth: 2
+
+  # Medium. `type` selects the slowness model:
+  #   constant                       — n(x) ≡ n0
+  #   gaussian_lens                  — n = n0 + n1·exp(-Σ (xᵢ-cᵢ)²/(2σᵢ²))
+  #   composite_gaussian_lens        — n0 + a sum of gaussian_lens bumps
+  #                                    (fields: n0, lenses: [gaussian_lens, …])
+  slowness:
+    type: "gaussian_lens"
+    center: [1.0, 1.0, 1.0]       # length = physical dimension
+    sigma: [0.3, 0.3, 0.3]
+    n0: 1.0
+    n1: 0.5
+
+  # Domain: L_x1/L_x2 (+ L_x3 for 3D). The box is [0, L] per axis.
+  physical_size:
+    L_x1: 2.0
+    L_x2: 2.0
+    L_x3: 2.0
+
+  # 3D momentum parametrization: spherical (φ, θ angles. The residual has a
+  # 1/sin φ pole, so φ is trained on a safe band) | cartesian (unit direction
+  # vector, bounded everywhere). Ignored in 2D.
+  parametrization: "cartesian"
+
+  # Boundary-condition sampling (only outward-pointing rays survive).
+  boundary:
+    physical_boundary_samples: 16 # spatial points per edge (2D) / face (3D)
+    theta_samples_at_boundary: 24
+    phi_samples_at_boundary: 8    # required in 3D, ignored in 2D
+    sample_mode: "grid"           # grid | random
+    # resample: false             # random mode only: fresh set every epoch
+    # phi_safe_delta: 0.3927      # 3D-spherical φ band half-width (default π/8)
+
+  loss:
+    function: "mse"
+    lambda_pde: 1.0
+    lambda_bc: 1.0
+    lambda_data: 0.0              # supervised data term (needs a reference
+                                  #   passed to PINNRunner.run programmatically)
+    lambda_circle: 0.1            # unit-circle/sphere regularizer on the
+                                  #   predicted exit direction
+    # pole_safe_residual: true    # 3D-spherical: train on the sin φ-multiplied
+                                  #   residual (finite at the poles)
+    # lambda_consistency: 0.0     # σ̂-step self-consistency residual
+    # consistency_dsigma: 0.02
+    # viscosity_eps: 0.0          # vanishing-viscosity smoothing term
+    # viscosity_anneal: "none"    #   none | cosine
+    # causality_eps: 0.0          # causal collocation weighting
+
+  device: "auto"                  # auto (cuda if available, else cpu) | cpu (default) | cuda
+  seed: 42                        # omit for a random (but recorded) seed
+  deterministic: false            # bit-exact CUDA runs (1.5-2x slower)
+
+  optimizers:
+    adam:
+      epochs: 30000
+      lr: 1e-3
+      log_every: 1000
+      collocation_samples: 8192   # interior points per epoch
+      sample_mode: "random"
+      resample: true              # fresh collocation batch every epoch
+      # grad_clip: 0.0            # gradient-norm clip (0 = off)
+      # lr_decay: "cosine"        # cosine decay to lr*lr_decay_floor
+      # lr_decay_floor: 0.01
+      # rar: false                # residual-based adaptive refinement
+      # rar_pool_factor: 4
+      # rar_every: 1000
+      # adaptive_weighting: false # gradient-norm loss balancing
+      # adaptive_every: 1000
+      # lens_curriculum: 0.0      # grow the lens amplitude over training
+    lbfgs:                        # optional — omit the block to skip L-BFGS
+      steps: 1000
+      lr: 1.0
+      log_every: 50
+      max_iter: 20
+      history_size: 50
+      line_search_fn: "strong_wolfe"
+      collocation_samples: 16384
+      sample_mode: "random"
+      resample: false             # frozen set (a noisy closure thrashes the
+                                  #   line search)
+      # resample_per_step: false  # fresh set per outer step instead
+
+# ── examples (small. Minutes on CPU with --set device=cpu) ──────────────────
+
+# 2D constant medium
+constant_medium:
+  net:
+    name: "fc-mlp"
+    arch_name: "fc-tanh"
+    hidden_layers: 4
+    hidden_neurons: 64
+    activation: "tanh"
+  slowness:
+    type: "constant"
+    n0: 1.0
+  physical_size:
+    L_x1: 1.0
+    L_x2: 1.0
+  boundary:
+    physical_boundary_samples: 64
+    theta_samples_at_boundary: 32
+    sample_mode: "grid"
+  loss:
+    function: "mse"
+    lambda_pde: 1.0
+    lambda_bc: 1.0
+    lambda_data: 0.0
+  device: "cuda"
+  seed: 42
+  optimizers:
+    adam:
+      epochs: 3000
+      lr: 1e-3
+      log_every: 300
+      collocation_samples: 4096
+      sample_mode: "random"
+      resample: true
+    lbfgs:
+      steps: 200
+      lr: 1.0
+      log_every: 20
+      max_iter: 20
+      history_size: 50
+      line_search_fn: "strong_wolfe"
+      collocation_samples: 20480
+      sample_mode: "random"
+      resample: false
+
+# 3D Gaussian lens, spherical momentum chart.
+gaussian_lens_3d:
+  net:
+    name: "fc-mlp"
+    arch_name: "fc-tanh-3d"
+    hidden_layers: 4
+    hidden_neurons: 64
+    activation: "tanh"
+  slowness:
+    type: "gaussian_lens"
+    center: [1.0, 1.0, 1.0]
+    sigma: [0.3, 0.3, 0.3]
+    n0: 1.0
+    n1: 0.5
+  physical_size:
+    L_x1: 2.0
+    L_x2: 2.0
+    L_x3: 2.0
+  parametrization: "spherical"
+  boundary:
+    physical_boundary_samples: 16
+    theta_samples_at_boundary: 24
+    phi_samples_at_boundary: 8
+    sample_mode: "grid"
+  loss:
+    function: "mse"
+    lambda_pde: 1.0
+    lambda_bc: 1.0
+    lambda_data: 0.0
+  device: "cuda"
+  seed: 42
+  optimizers:
+    adam:
+      epochs: 3000
+      lr: 1e-3
+      log_every: 300
+      collocation_samples: 4096
+      sample_mode: "random"
+      resample: true
+    lbfgs:
+      steps: 200
+      lr: 1.0
+      log_every: 20
+      max_iter: 20
+      history_size: 50
+      line_search_fn: "strong_wolfe"
+      collocation_samples: 8192
+      sample_mode: "random"
+      resample: false
+
+# 3D Gaussian lens, Cartesian momentum chart.
+gaussian_lens_cart_3d:
+  net:
+    name: "fc-mlp"
+    arch_name: "fc-tanh-cart-3d"
+    hidden_layers: 4
+    hidden_neurons: 64
+    activation: "tanh"
+  slowness:
+    type: "gaussian_lens"
+    center: [1.0, 1.0, 1.0]
+    sigma: [0.3, 0.3, 0.3]
+    n0: 1.0
+    n1: 0.5
+  physical_size:
+    L_x1: 2.0
+    L_x2: 2.0
+    L_x3: 2.0
+  parametrization: "cartesian"
+  boundary:
+    physical_boundary_samples: 16
+    theta_samples_at_boundary: 24
+    phi_samples_at_boundary: 8
+    sample_mode: "grid"
+  loss:
+    function: "mse"
+    lambda_pde: 1.0
+    lambda_bc: 1.0
+    lambda_data: 0.0
+    lambda_circle: 0.1
+  device: "cuda"
+  seed: 42
+  optimizers:
+    adam:
+      epochs: 3000
+      lr: 1e-3
+      log_every: 300
+      collocation_samples: 4096
+      sample_mode: "random"
+      resample: true
+    lbfgs:
+      steps: 200
+      lr: 1.0
+      log_every: 20
+      max_iter: 20
+      history_size: 50
+      line_search_fn: "strong_wolfe"
+      collocation_samples: 8192
+      sample_mode: "random"
+      resample: false
+
+# Slowness-conditioned family: one network solves a whole distribution of
+# lenses (every collocation point draws its own medium. The descriptor is fed
+# as extra network inputs). Evaluate per-medium with scripts/eval_family.py.
+gaussian_lens_family_cart_3d:
+  net:
+    name: "fc-mlp"
+    arch_name: "fc-pirate-cart-gen-3d"
+    hidden_layers: 5
+    hidden_neurons: 96
+    activation: "tanh"
+    trunk: "pirate"
+    exit_time_features: true
+    factored_eikonal: true
+  slowness:
+    type: "gaussian_lens_family"
+    n0: 1.0
+    n1_range: [0.2, 0.6]
+    center_ranges: [[0.6, 1.4], [0.6, 1.4], [0.6, 1.4]]
+    sigma_ranges: [[0.3, 0.7], [0.3, 0.7], [0.3, 0.7]]
+    held_out:                     # Selected test medium set
+      - [0.3, 1.0, 1.0, 1.0, 0.5, 0.5, 0.5]
+      - [0.55, 0.75, 1.25, 1.0, 0.35, 0.35, 0.45]
+      - [0.4, 1.2, 0.8, 1.1, 0.6, 0.45, 0.4]
+      - [0.5, 1.0, 1.0, 0.7, 0.4, 0.6, 0.55]
+    # n_probe: 6                  # >0 switches to field-encoder conditioning
+                                  #   (set net.field_encoder: true with it)
+  physical_size:
+    L_x1: 2.0
+    L_x2: 2.0
+    L_x3: 2.0
+  parametrization: "cartesian"
+  boundary:
+    physical_boundary_samples: 16
+    theta_samples_at_boundary: 24
+    phi_samples_at_boundary: 8
+    sample_mode: "grid"
+  loss:
+    function: "mse"
+    lambda_pde: 1.0
+    lambda_bc: 1.0
+    lambda_data: 0.0
+    lambda_circle: 0.1
+  device: "cuda"
+  seed: 42
+  optimizers:
+    adam:
+      epochs: 3000
+      lr: 1e-3
+      log_every: 300
+      collocation_samples: 4096
+      sample_mode: "random"
+      resample: true
+    lbfgs:
+      steps: 200
+      lr: 1.0
+      log_every: 20
+      max_iter: 20
+      history_size: 50
+      line_search_fn: "strong_wolfe"
+      collocation_samples: 8192
+      sample_mode: "random"
+      resample: false

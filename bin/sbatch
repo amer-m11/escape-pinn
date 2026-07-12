@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+#
+# Submit a SLURM job script to the cluster over SSH.
+#
+# Usage:
+#   bin/sbatch jobs/template.sh                 # submit one script
+#   bin/sbatch jobs/seed_template.sh --qos=...  # extra args pass to sbatch
+#
+# Pulls the latest commit on the cluster first (git pull --ff-only) so the
+# submitted script and code match the local state you pushed.
+#
+# Reads REMOTE_USER, REMOTE_HOST, REMOTE_REPO_PATH from .env (repo root).
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ -f "$REPO_ROOT/.env" ]]; then
+    # shellcheck disable=SC1091
+    source "$REPO_ROOT/.env"
+fi
+
+if [[ $# -lt 1 || "$1" == "-h" || "$1" == "--help" ]]; then
+    sed -n '2,12p' "$0"
+    exit 1
+fi
+
+if [[ -z "${REMOTE_USER:-}" ]]; then
+    echo "ERROR: REMOTE_USER is not set (copy .env.template to .env)." >&2
+    exit 1
+fi
+
+SCRIPT="$1"
+shift
+if [[ ! -f "$REPO_ROOT/$SCRIPT" ]]; then
+    echo "ERROR: no such job script: $SCRIPT" >&2
+    exit 1
+fi
+
+REMOTE="${REMOTE_USER}@${REMOTE_HOST}"
+ssh "$REMOTE" "cd '${REMOTE_REPO_PATH}' && git pull --ff-only && sbatch $* '$SCRIPT'"

@@ -1,0 +1,22 @@
+[[source]]
+url = "https://pypi.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+numpy = "==2.4.4"
+scipy = "==1.17.1"
+matplotlib = "==3.10.9"
+ipykernel = "==7.2.0"
+torch = "==2.11.0"
+pyyaml = "==6.0.3"
+pydantic = "==2.13.4"
+numba = "==0.65.1"
+
+"escape-pinn" = {path = ".", editable = true}
+
+[dev-packages]
+isort = "==8.0.1"
+
+[requires]
+python_version = "3.14"

@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+#
+# Mirror the cluster's output/ directory (logs, run dirs, plots) down to
+# the local machine.
+#
+# Usage:
+#   bin/sync_runs             # rsync remote output/ -> LOCAL_OUTPUT_DIR
+#   bin/sync_runs --dry-run   # show what would transfer
+#
+# Files larger than MAX_SYNC_SIZE (default 3G — dense cluster-side
+# reference meshes) are skipped. Set MAX_SYNC_SIZE= to disable the cap.
+#
+# Reads REMOTE_USER, REMOTE_HOST, REMOTE_REPO_PATH, LOCAL_OUTPUT_DIR
+# (default ./output/remote) from .env (repo root).
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ -f "$REPO_ROOT/.env" ]]; then
+    # shellcheck disable=SC1091
+    source "$REPO_ROOT/.env"
+fi
+
+if [[ -z "${REMOTE_USER:-}" ]]; then
+    echo "ERROR: REMOTE_USER is not set (copy .env.template to .env)." >&2
+    exit 1
+fi
+
+DRY_RUN=""
+case "${1:-}" in
+    "") ;;
+    --dry-run) DRY_RUN="--dry-run" ;;
+    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
+    *) echo "Unknown argument: $1" >&2; exit 1 ;;
+esac
+
+LOCAL_OUTPUT_DIR="${LOCAL_OUTPUT_DIR:-$REPO_ROOT/output/remote}"
+REMOTE_PATH="${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_REPO_PATH}/output/"
+mkdir -p "$LOCAL_OUTPUT_DIR"
+
+MAX_SYNC_SIZE="${MAX_SYNC_SIZE-3G}"
+MAXSIZE_OPT=""
+[[ -n "$MAX_SYNC_SIZE" ]] && MAXSIZE_OPT="--max-size=$MAX_SYNC_SIZE"
+
+echo "Fetching from : $REMOTE_PATH"
+echo "Into          : $LOCAL_OUTPUT_DIR"
+rsync -avzh --partial --info=progress2 ${MAXSIZE_OPT} ${DRY_RUN} \
+      "$REMOTE_PATH" "$LOCAL_OUTPUT_DIR/"
+
+echo ""
+echo "Done. Local artefacts under: $LOCAL_OUTPUT_DIR"
